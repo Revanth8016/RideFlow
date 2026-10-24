@@ -1,3 +1,4 @@
+
 require('dotenv').config();
 
 const express = require('express');
@@ -5,12 +6,13 @@ const Database = require('better-sqlite3');
 const path = require('path');
 
 const app = express();
-const PORT = 3001;
+const PORT = Number(process.env.PORT) || 3001;
 const API_KEY = process.env.IDEAL_POSTCODES_API_KEY;
 const API_BASE = 'https://api.ideal-postcodes.co.uk/v1';
 
 app.use(express.json());
 
+// Use the existing database file. Do not delete or recreate it.
 const db = new Database(path.join(__dirname, 'rideflow.db'));
 db.pragma('journal_mode = WAL');
 
@@ -134,10 +136,6 @@ const getBookingsForDriver = db.prepare(`
 
 // ---------------- DRIVER AVAILABILITY ----------------
 
-/**
- * Only automatically recalculate availability if the driver has
- * not explicitly selected a manual availability override.
- */
 function refreshDriverAvailability(driverName) {
   const name = String(driverName || '').trim();
 
@@ -156,7 +154,6 @@ function refreshDriverAvailability(driverName) {
     return;
   }
 
-  // Preserve the existing rule for unavailable drivers.
   if (driver.availability === 'Unavailable') {
     return;
   }
@@ -503,13 +500,10 @@ app.put('/api/drivers/:id', (req, res) => {
 
     updateDriver.run(driver);
 
-    // If the name changes, update the previous driver's automatic
-    // availability only when that driver's status is not manually locked.
     if (existing.name.toLowerCase() !== driver.name.toLowerCase()) {
       refreshDriverAvailability(existing.name);
     }
 
-    // Do not automatically recalculate the updated driver's status.
     res.json(getDriver.get(id));
   } catch (error) {
     console.error('Update driver error:', error);
@@ -615,10 +609,24 @@ app.get('/api/address-resolve/:id', async (req, res) => {
   }
 });
 
+// ---------------- FRONTEND ----------------
+
+// Serve the compiled React/Vite site in production.
+app.use(express.static(path.join(__dirname, 'dist')));
+
+// Return the React app for browser routes, but leave API routes to Express.
+app.use((req, res, next) => {
+  if (req.method !== 'GET' || req.path.startsWith('/api/')) {
+    return next();
+  }
+
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
+
 // ---------------- START SERVER ----------------
 
 const server = app.listen(PORT, () => {
-  console.log(`RideFlow server running at http://localhost:${PORT}`);
+  console.log(`RideFlow server running on port ${PORT}`);
   console.log(`SQLite database: ${path.join(__dirname, 'rideflow.db')}`);
 });
 
