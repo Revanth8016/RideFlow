@@ -4,6 +4,8 @@ require('dotenv').config();
 const express = require('express');
 const Database = require('better-sqlite3');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -12,16 +14,25 @@ const API_BASE = 'https://api.ideal-postcodes.co.uk/v1';
 
 app.use(express.json());
 
-// Use a separate writable database path on the hosted demo.
-// Locally, continue using the existing rideflow.db file.
-const DB_PATH =
-  process.env.DATABASE_PATH ||
-  path.join(__dirname, 'rideflow.db');
+// ---------------- DATABASE PATH ----------------
+
+// Locally, preserve the existing database.
+// On the hosting service, use a writable temporary directory.
+// Set DATABASE_PATH explicitly if your host provides persistent storage.
+const isHosted = Boolean(process.env.PORT);
+const DB_DIR = process.env.DATABASE_DIR || os.tmpdir();
+
+const DB_PATH = process.env.DATABASE_PATH ||
+  (isHosted
+    ? path.join(DB_DIR, 'rideflow.db')
+    : path.join(__dirname, 'rideflow.db'));
+
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 
-// ---------------- DATABASE ----------------
+// ---------------- DATABASE TABLES ----------------
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS bookings (
@@ -47,7 +58,6 @@ CREATE TABLE IF NOT EXISTS drivers (
 );
 `);
 
-// Add the manual override column without deleting existing data.
 const driverColumns = db.prepare(
   'PRAGMA table_info(drivers)'
 ).all();
@@ -154,7 +164,6 @@ function refreshDriverAvailability(driverName) {
     return;
   }
 
-  // Manual selections always take priority.
   if (Number(driver.availability_manual) === 1) {
     return;
   }
@@ -217,7 +226,7 @@ const assignBookingTransaction = db.transaction(
   }
 );
 
-// ---------------- HEALTH ----------------
+// ---------------- HEALTH CHECK ----------------
 
 app.get('/api/health', (req, res) => {
   res.json({
@@ -227,7 +236,7 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// ---------------- BOOKINGS ----------------
+// ---------------- BOOKINGS API ----------------
 
 app.get('/api/bookings', (req, res) => {
   try {
@@ -404,7 +413,7 @@ app.put('/api/bookings/:id', (req, res) => {
   }
 });
 
-// ---------------- DRIVERS ----------------
+// ---------------- DRIVERS API ----------------
 
 app.get('/api/drivers', (req, res) => {
   try {
@@ -648,3 +657,4 @@ function shutdown(signal) {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+
