@@ -16,48 +16,75 @@ app.use(express.json());
 
 // ---------------- DATABASE PATH ----------------
 
-// Locally, preserve the existing database.
-// On the hosting service, use a writable temporary directory.
-// Set DATABASE_PATH explicitly if your host provides persistent storage.
+// Locally, use the existing RideFlow database.
+// On Hostless, DATABASE_PATH should point to a writable location.
+// Configure persistent storage before using this for live bookings.
+
 const isHosted = Boolean(process.env.PORT);
-const DB_DIR = process.env.DATABASE_DIR || os.tmpdir();
 
 const DB_PATH = process.env.DATABASE_PATH ||
   (isHosted
-    ? path.join(DB_DIR, 'rideflow.db')
+    ? path.join(os.tmpdir(), 'rideflow.db')
     : path.join(__dirname, 'rideflow.db'));
 
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+const DB_DIR = path.dirname(DB_PATH);
 
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
+try {
+  fs.mkdirSync(DB_DIR, { recursive: true });
+
+  console.log('Database path:', DB_PATH);
+  console.log('Database directory exists:', fs.existsSync(DB_DIR));
+
+  try {
+    fs.accessSync(DB_DIR, fs.constants.W_OK);
+    console.log('Database directory writable: true');
+  } catch (error) {
+    console.error('Database directory writable: false');
+    throw error;
+  }
+} catch (error) {
+  console.error('Database directory setup failed:', error.message);
+  process.exit(1);
+}
+
+let db;
+
+try {
+  db = new Database(DB_PATH);
+  db.pragma('journal_mode = WAL');
+  console.log('SQLite database opened successfully.');
+} catch (error) {
+  console.error('SQLite database open failed:', error.message);
+  process.exit(1);
+}
 
 // ---------------- DATABASE TABLES ----------------
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS bookings (
- id TEXT PRIMARY KEY,
- passenger TEXT NOT NULL,
- phone TEXT NOT NULL DEFAULT '',
- pickup TEXT NOT NULL,
- destination TEXT NOT NULL,
- time TEXT NOT NULL,
- driver TEXT NOT NULL DEFAULT 'Unassigned',
- status TEXT NOT NULL DEFAULT 'Unassigned',
- created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  id TEXT PRIMARY KEY,
+  passenger TEXT NOT NULL,
+  phone TEXT NOT NULL DEFAULT '',
+  pickup TEXT NOT NULL,
+  destination TEXT NOT NULL,
+  time TEXT NOT NULL,
+  driver TEXT NOT NULL DEFAULT 'Unassigned',
+  status TEXT NOT NULL DEFAULT 'Unassigned',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS drivers (
- id TEXT PRIMARY KEY,
- name TEXT NOT NULL,
- phone TEXT NOT NULL DEFAULT '',
- vehicle_model TEXT NOT NULL DEFAULT '',
- vehicle_registration TEXT NOT NULL DEFAULT '',
- availability TEXT NOT NULL DEFAULT 'Available',
- created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  phone TEXT NOT NULL DEFAULT '',
+  vehicle_model TEXT NOT NULL DEFAULT '',
+  vehicle_registration TEXT NOT NULL DEFAULT '',
+  availability TEXT NOT NULL DEFAULT 'Available',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `);
 
+// Safely add the availability override column to existing databases.
 const driverColumns = db.prepare(
   'PRAGMA table_info(drivers)'
 ).all();
@@ -75,78 +102,92 @@ const allowedAvailability = ['Available', 'Busy', 'Unavailable'];
 // ---------------- PREPARED STATEMENTS ----------------
 
 const getBookings = db.prepare(`
- SELECT id, passenger, phone, pickup, destination, time, driver, status
- FROM bookings
- ORDER BY created_at DESC, rowid DESC
+  SELECT id, passenger, phone, pickup, destination, time, driver, status
+  FROM bookings
+  ORDER BY created_at DESC, rowid DESC
 `);
 
 const getBooking = db.prepare(`
- SELECT id, passenger, phone, pickup, destination, time, driver, status
- FROM bookings WHERE id = ?
+  SELECT id, passenger, phone, pickup, destination, time, driver, status
+  FROM bookings
+  WHERE id = ?
 `);
 
 const insertBooking = db.prepare(`
- INSERT INTO bookings
- (id, passenger, phone, pickup, destination, time, driver, status)
- VALUES
- (@id, @passenger, @phone, @pickup, @destination, @time, @driver, @status)
+  INSERT INTO bookings
+    (id, passenger, phone, pickup, destination, time, driver, status)
+  VALUES
+    (@id, @passenger, @phone, @pickup, @destination, @time, @driver, @status)
 `);
 
 const updateBooking = db.prepare(`
- UPDATE bookings
- SET passenger=@passenger, phone=@phone, pickup=@pickup,
-     destination=@destination, time=@time, driver=@driver, status=@status
- WHERE id=@id
+  UPDATE bookings
+  SET passenger = @passenger,
+      phone = @phone,
+      pickup = @pickup,
+      destination = @destination,
+      time = @time,
+      driver = @driver,
+      status = @status
+  WHERE id = @id
 `);
 
 const getDrivers = db.prepare(`
- SELECT id, name, phone, vehicle_model, vehicle_registration, availability
- FROM drivers
- ORDER BY created_at DESC, rowid DESC
+  SELECT id, name, phone, vehicle_model, vehicle_registration, availability
+  FROM drivers
+  ORDER BY created_at DESC, rowid DESC
 `);
 
 const getDriver = db.prepare(`
- SELECT id, name, phone, vehicle_model, vehicle_registration, availability
- FROM drivers WHERE id = ?
+  SELECT id, name, phone, vehicle_model, vehicle_registration, availability
+  FROM drivers
+  WHERE id = ?
 `);
 
 const getDriverByName = db.prepare(`
- SELECT id, name, phone, vehicle_model, vehicle_registration,
-        availability, availability_manual
- FROM drivers WHERE LOWER(name) = LOWER(?)
+  SELECT id, name, phone, vehicle_model, vehicle_registration,
+         availability, availability_manual
+  FROM drivers
+  WHERE LOWER(name) = LOWER(?)
 `);
 
 const getDriverWithOverride = db.prepare(`
- SELECT id, name, phone, vehicle_model, vehicle_registration,
-        availability, availability_manual
- FROM drivers WHERE id = ?
+  SELECT id, name, phone, vehicle_model, vehicle_registration,
+         availability, availability_manual
+  FROM drivers
+  WHERE id = ?
 `);
 
 const insertDriver = db.prepare(`
- INSERT INTO drivers
- (id, name, phone, vehicle_model, vehicle_registration,
-  availability, availability_manual)
- VALUES
- (@id, @name, @phone, @vehicle_model, @vehicle_registration,
-  @availability, @availability_manual)
+  INSERT INTO drivers
+    (id, name, phone, vehicle_model, vehicle_registration,
+     availability, availability_manual)
+  VALUES
+    (@id, @name, @phone, @vehicle_model, @vehicle_registration,
+     @availability, @availability_manual)
 `);
 
 const updateDriver = db.prepare(`
- UPDATE drivers
- SET name=@name, phone=@phone, vehicle_model=@vehicle_model,
-     vehicle_registration=@vehicle_registration,
-     availability=@availability,
-     availability_manual=@availability_manual
- WHERE id=@id
+  UPDATE drivers
+  SET name = @name,
+      phone = @phone,
+      vehicle_model = @vehicle_model,
+      vehicle_registration = @vehicle_registration,
+      availability = @availability,
+      availability_manual = @availability_manual
+  WHERE id = @id
 `);
 
 const setDriverAvailability = db.prepare(`
- UPDATE drivers SET availability = ? WHERE id = ?
+  UPDATE drivers
+  SET availability = ?
+  WHERE id = ?
 `);
 
 const getBookingsForDriver = db.prepare(`
- SELECT id, status FROM bookings
- WHERE LOWER(driver) = LOWER(?)
+  SELECT id, status
+  FROM bookings
+  WHERE LOWER(driver) = LOWER(?)
 `);
 
 // ---------------- DRIVER AVAILABILITY ----------------
@@ -229,11 +270,23 @@ const assignBookingTransaction = db.transaction(
 // ---------------- HEALTH CHECK ----------------
 
 app.get('/api/health', (req, res) => {
-  res.json({
-    ok: true,
-    service: 'RideFlow API',
-    database: 'connected'
-  });
+  try {
+    db.prepare('SELECT 1').get();
+
+    res.json({
+      ok: true,
+      service: 'RideFlow API',
+      database: 'connected'
+    });
+  } catch (error) {
+    console.error('Health check failed:', error.message);
+
+    res.status(500).json({
+      ok: false,
+      service: 'RideFlow API',
+      database: 'error'
+    });
+  }
 });
 
 // ---------------- BOOKINGS API ----------------
@@ -531,7 +584,7 @@ app.get('/api/address-search', async (req, res) => {
   try {
     if (!API_KEY) {
       return res.status(500).json({
-        error: 'Missing Ideal Postcodes API key. Check your .env file.'
+        error: 'Missing Ideal Postcodes API key. Check the server environment settings.'
       });
     }
 
@@ -556,6 +609,7 @@ app.get('/api/address-search', async (req, res) => {
 
     if (!response.ok || data.code !== 2000) {
       console.error('Address search failed:', data.message);
+
       return res.status(502).json({
         error: data.message || 'Address search failed.'
       });
@@ -569,6 +623,7 @@ app.get('/api/address-search', async (req, res) => {
     });
   } catch (error) {
     console.error('Address search error:', error);
+
     res.status(500).json({
       error: 'Could not search addresses.'
     });
@@ -579,7 +634,7 @@ app.get('/api/address-resolve/:id', async (req, res) => {
   try {
     if (!API_KEY) {
       return res.status(500).json({
-        error: 'Missing Ideal Postcodes API key. Check your .env file.'
+        error: 'Missing Ideal Postcodes API key. Check the server environment settings.'
       });
     }
 
@@ -595,6 +650,7 @@ app.get('/api/address-resolve/:id', async (req, res) => {
 
     if (!response.ok || data.code !== 2000) {
       console.error('Address lookup failed:', data.message);
+
       return res.status(502).json({
         error: data.message || 'Could not retrieve the full address.'
       });
@@ -617,6 +673,7 @@ app.get('/api/address-resolve/:id', async (req, res) => {
     res.json({ address });
   } catch (error) {
     console.error('Address lookup error:', error);
+
     res.status(500).json({
       error: 'Could not retrieve the address.'
     });
@@ -650,11 +707,15 @@ function shutdown(signal) {
   console.log(`Received ${signal}. Shutting down RideFlow server...`);
 
   server.close(() => {
-    db.close();
+    if (db && db.open) {
+      db.close();
+    }
+
     process.exit(0);
   });
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+
 

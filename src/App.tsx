@@ -26,6 +26,12 @@ type Driver = {
 
 type AssignmentFilter = "All bookings" | "Assigned" | "Unassigned";
 
+type RecoveryIssue = {
+  booking: Booking;
+  reasons: string[];
+  severity: "High" | "Medium";
+};
+
 function normalizeAvailability(value: unknown): string {
   const availability = String(value ?? "Available").trim().toLowerCase();
 
@@ -68,6 +74,14 @@ const emptyForm: BookingForm = {
   status: "Unassigned",
 };
 
+const emptyDriverForm = {
+  name: "",
+  phone: "",
+  vehicle_model: "",
+  vehicle_registration: "",
+  availability: "Available",
+};
+
 const navigation = [
   { name: "Dashboard", icon: "▦" },
   { name: "Bookings", icon: "▤" },
@@ -77,81 +91,6 @@ const navigation = [
 ];
 
 const bookingStatuses = ["Confirmed", "At risk", "Unassigned"];
-
-type RecoveryIssue = {
-  booking: Booking;
-  reasons: string[];
-  severity: "High" | "Medium";
-};
-
-/**
- * Identifies bookings that may need an operator's attention.
- * This is rules-based review only. It does not automatically
- * reassign drivers or change bookings.
- */
-function getRecoveryIssues(
-  bookings: Booking[],
-  drivers: Driver[]
-): RecoveryIssue[] {
-  const now = Date.now();
-
-  return bookings
-    .map((booking) => {
-      const reasons: string[] = [];
-      const status = booking.status.trim().toLowerCase();
-      const driverName = booking.driver.trim().toLowerCase();
-      const assigned = driverName !== "" && driverName !== "unassigned";
-
-      const assignedDriver = assigned
-        ? drivers.find(
-            (driver) => driver.name.trim().toLowerCase() === driverName
-          )
-        : undefined;
-
-      if (!assigned) {
-        reasons.push("No driver assigned");
-      } else if (!assignedDriver) {
-        reasons.push("Assigned driver is not in the saved driver list");
-      } else if (
-        assignedDriver.availability.trim().toLowerCase() === "unavailable"
-      ) {
-        reasons.push("Assigned driver is marked unavailable");
-      }
-
-      if (status === "at risk") {
-        reasons.push("Booking is marked at risk");
-      }
-
-      const bookingTime = booking.time
-        ? new Date(booking.time.replace(" ", "T")).getTime()
-        : Number.NaN;
-
-      if (
-        Number.isFinite(bookingTime) &&
-        bookingTime < now &&
-        status !== "cancelled"
-      ) {
-        reasons.push("Pickup time has passed — check the booking status");
-      }
-
-      if (reasons.length === 0) return null;
-
-      const severity: RecoveryIssue["severity"] =
-        !assigned ||
-        !assignedDriver ||
-        assignedDriver?.availability.trim().toLowerCase() === "unavailable" ||
-        status === "at risk"
-          ? "High"
-          : "Medium";
-
-      return { booking, reasons, severity };
-    })
-    .filter((issue): issue is RecoveryIssue => issue !== null)
-    .sort((a, b) => {
-      if (a.severity !== b.severity) return a.severity === "High" ? -1 : 1;
-      return a.booking.time.localeCompare(b.booking.time);
-    });
-}
 
 function readField(
   item: Record<string, unknown>,
@@ -232,22 +171,100 @@ function getStatusClass(status: string): string {
   }
 }
 
+/**
+ * Identifies bookings that may need an operator's attention.
+ * This is rules-based review only. It does not automatically
+ * reassign drivers or change bookings.
+ */
+function getRecoveryIssues(
+  bookings: Booking[],
+  drivers: Driver[]
+): RecoveryIssue[] {
+  const now = Date.now();
+
+  return bookings
+    .map((booking) => {
+      const reasons: string[] = [];
+      const status = booking.status.trim().toLowerCase();
+      const driverName = booking.driver.trim().toLowerCase();
+      const assigned = driverName !== "" && driverName !== "unassigned";
+
+      const assignedDriver = assigned
+        ? drivers.find(
+            (driver) => driver.name.trim().toLowerCase() === driverName
+          )
+        : undefined;
+
+      if (!assigned) {
+        reasons.push("No driver assigned");
+      } else if (!assignedDriver) {
+        reasons.push("Assigned driver is not in the saved driver list");
+      } else if (
+        assignedDriver.availability.trim().toLowerCase() === "unavailable"
+      ) {
+        reasons.push("Assigned driver is marked unavailable");
+      }
+
+      if (status === "at risk") {
+        reasons.push("Booking is marked at risk");
+      }
+
+      const bookingTime = booking.time
+        ? new Date(booking.time.replace(" ", "T")).getTime()
+        : Number.NaN;
+
+      if (
+        Number.isFinite(bookingTime) &&
+        bookingTime < now &&
+        status !== "cancelled"
+      ) {
+        reasons.push("Pickup time has passed — check the booking status");
+      }
+
+      if (reasons.length === 0) return null;
+
+      const severity: RecoveryIssue["severity"] =
+        !assigned ||
+        !assignedDriver ||
+        assignedDriver?.availability.trim().toLowerCase() === "unavailable" ||
+        status === "at risk"
+          ? "High"
+          : "Medium";
+
+      return { booking, reasons, severity };
+    })
+    .filter((issue): issue is RecoveryIssue => issue !== null)
+    .sort((a, b) => {
+      if (a.severity !== b.severity) return a.severity === "High" ? -1 : 1;
+      return a.booking.time.localeCompare(b.booking.time);
+    });
+}
+
 function App() {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [activePage, setActivePage] = useState("Dashboard");
+
   const [modalOpen, setModalOpen] = useState(false);
+  const [driverModalOpen, setDriverModalOpen] = useState(false);
+
   const [editingBookingId, setEditingBookingId] = useState<string | null>(
     null
   );
+
   const [form, setForm] = useState<BookingForm>(emptyForm);
+  const [newDriver, setNewDriver] = useState(emptyDriverForm);
+
   const [loading, setLoading] = useState(true);
   const [driversLoading, setDriversLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savingNewDriver, setSavingNewDriver] = useState(false);
   const [savingDriverId, setSavingDriverId] = useState<string | null>(null);
+
   const [error, setError] = useState("");
   const [driverError, setDriverError] = useState("");
   const [notice, setNotice] = useState("");
+
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All statuses");
   const [assignmentFilter, setAssignmentFilter] =
@@ -391,8 +408,72 @@ function App() {
     }
   }
 
+  async function handleSaveDriver(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (savingNewDriver) return;
+
+    const name = newDriver.name.trim();
+
+    if (!name) {
+      setDriverError("Please enter the driver's name.");
+      return;
+    }
+
+    setSavingNewDriver(true);
+    setDriverError("");
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await fetch("/api/drivers", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name,
+          phone: newDriver.phone.trim(),
+          vehicle_model: newDriver.vehicle_model.trim(),
+          vehicle_registration:
+            newDriver.vehicle_registration.trim().toUpperCase(),
+          availability: normalizeAvailability(newDriver.availability),
+        }),
+      });
+
+      const result: unknown = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const message =
+          result &&
+          typeof result === "object" &&
+          "error" in result &&
+          typeof result.error === "string"
+            ? result.error
+            : "Could not save the driver.";
+
+        throw new Error(message);
+      }
+
+      await loadDrivers();
+
+      setNewDriver({ ...emptyDriverForm });
+      setDriverModalOpen(false);
+      setNotice(`${name} was added successfully.`);
+    } catch (err) {
+      setDriverError(
+        err instanceof Error
+          ? err.message
+          : "Could not save the driver. Please try again."
+      );
+    } finally {
+      setSavingNewDriver(false);
+    }
+  }
+
   useEffect(() => {
     void loadBookings();
+
     void loadDrivers().catch(() => {
       // The driver error is displayed in the Drivers section.
     });
@@ -434,12 +515,20 @@ function App() {
     }));
   }
 
+  function openAddDriver() {
+    setDriverError("");
+    setError("");
+    setNotice("");
+    setNewDriver({ ...emptyDriverForm });
+    setDriverModalOpen(true);
+  }
+
   async function openNewBooking() {
     setError("");
     setNotice("");
     setDriverError("");
     setEditingBookingId(null);
-    setForm(emptyForm);
+    setForm({ ...emptyForm });
 
     try {
       await loadDrivers();
@@ -500,6 +589,7 @@ function App() {
       const latestDrivers = await loadDrivers();
 
       const selectedDriverName = form.driver.trim();
+
       const selectedDriver = latestDrivers.find(
         (driver) =>
           driver.name.trim().toLowerCase() ===
@@ -582,13 +672,14 @@ function App() {
       await loadBookings();
       await loadDrivers();
 
-      setForm(emptyForm);
+      setForm({ ...emptyForm });
       setEditingBookingId(null);
       setModalOpen(false);
       setActivePage("Bookings");
       setSearchQuery("");
       setStatusFilter("All statuses");
       setAssignmentFilter("All bookings");
+
       setNotice(
         wasEditing
           ? "Booking updated successfully."
@@ -664,9 +755,11 @@ function App() {
   ).length;
 
   const recoveryIssues = getRecoveryIssues(bookings, drivers);
+
   const highPriorityRecoveries = recoveryIssues.filter(
     (issue) => issue.severity === "High"
   ).length;
+
   const mediumPriorityRecoveries = recoveryIssues.filter(
     (issue) => issue.severity === "Medium"
   ).length;
@@ -799,7 +892,16 @@ function App() {
               </p>
             </div>
 
-            {activePage !== "Drivers" && (
+            {activePage === "Drivers" ? (
+              <button
+                className="primary-button"
+                type="button"
+                onClick={openAddDriver}
+              >
+                <span className="button-plus">+</span>
+                Add driver
+              </button>
+            ) : (
               <button
                 className="primary-button"
                 type="button"
@@ -1723,6 +1825,154 @@ function App() {
                     : editingBookingId
                       ? "Save changes"
                       : "Save booking"}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {driverModalOpen && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              !savingNewDriver
+            ) {
+              setDriverModalOpen(false);
+            }
+          }}
+        >
+          <section
+            className="booking-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="driver-modal-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div>
+                <div className="eyebrow">DRIVER MANAGEMENT</div>
+                <h2 id="driver-modal-title">Add a driver</h2>
+                <p>Enter the driver's contact and vehicle details.</p>
+              </div>
+
+              <button
+                className="close-button"
+                type="button"
+                aria-label="Close"
+                disabled={savingNewDriver}
+                onClick={() => setDriverModalOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+
+            <form className="booking-form" onSubmit={handleSaveDriver}>
+              <div className="form-section-title">Driver details</div>
+
+              <div className="form-grid">
+                <label className="field">
+                  <span>Driver name *</span>
+                  <input
+                    required
+                    autoFocus
+                    value={newDriver.name}
+                    onChange={(event) =>
+                      setNewDriver((current) => ({
+                        ...current,
+                        name: event.target.value,
+                      }))
+                    }
+                    placeholder="Enter driver's full name"
+                  />
+                </label>
+
+                <label className="field">
+                  <span>Phone number</span>
+                  <input
+                    type="tel"
+                    value={newDriver.phone}
+                    onChange={(event) =>
+                      setNewDriver((current) => ({
+                        ...current,
+                        phone: event.target.value,
+                      }))
+                    }
+                    placeholder="Enter phone number"
+                  />
+                </label>
+
+                <label className="field">
+                  <span>Vehicle model</span>
+                  <input
+                    value={newDriver.vehicle_model}
+                    onChange={(event) =>
+                      setNewDriver((current) => ({
+                        ...current,
+                        vehicle_model: event.target.value,
+                      }))
+                    }
+                    placeholder="e.g. Toyota Prius"
+                  />
+                </label>
+
+                <label className="field">
+                  <span>Vehicle registration</span>
+                  <input
+                    value={newDriver.vehicle_registration}
+                    onChange={(event) =>
+                      setNewDriver((current) => ({
+                        ...current,
+                        vehicle_registration: event.target.value.toUpperCase(),
+                      }))
+                    }
+                    placeholder="e.g. AB12 CDE"
+                  />
+                </label>
+              </div>
+
+              <label className="field status-field">
+                <span>Availability</span>
+                <select
+                  value={newDriver.availability}
+                  onChange={(event) =>
+                    setNewDriver((current) => ({
+                      ...current,
+                      availability: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="Available">Available</option>
+                  <option value="Busy">Busy</option>
+                  <option value="Unavailable">Unavailable</option>
+                </select>
+              </label>
+
+              {driverError && (
+                <div className="alert alert-error" role="alert">
+                  <span>!</span>
+                  {driverError}
+                </div>
+              )}
+
+              <div className="modal-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={savingNewDriver}
+                  onClick={() => setDriverModalOpen(false)}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={savingNewDriver}
+                >
+                  {savingNewDriver ? "Saving…" : "Save driver"}
                 </button>
               </div>
             </form>
