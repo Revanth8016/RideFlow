@@ -12,8 +12,13 @@ const API_BASE = 'https://api.ideal-postcodes.co.uk/v1';
 
 app.use(express.json());
 
-// Use the existing database file. Do not delete or recreate it.
-const db = new Database(path.join(__dirname, 'rideflow.db'));
+// Use a separate writable database path on the hosted demo.
+// Locally, continue using the existing rideflow.db file.
+const DB_PATH =
+  process.env.DATABASE_PATH ||
+  path.join(__dirname, 'rideflow.db');
+
+const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 
 // ---------------- DATABASE ----------------
@@ -611,10 +616,8 @@ app.get('/api/address-resolve/:id', async (req, res) => {
 
 // ---------------- FRONTEND ----------------
 
-// Serve the compiled React/Vite site in production.
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// Return the React app for browser routes, but leave API routes to Express.
 app.use((req, res, next) => {
   if (req.method !== 'GET' || req.path.startsWith('/api/')) {
     return next();
@@ -625,9 +628,9 @@ app.use((req, res, next) => {
 
 // ---------------- START SERVER ----------------
 
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`RideFlow server running on port ${PORT}`);
-  console.log(`SQLite database: ${path.join(__dirname, 'rideflow.db')}`);
+  console.log(`SQLite database: ${DB_PATH}`);
 });
 
 server.on('error', error => {
